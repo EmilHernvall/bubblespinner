@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bubblespinner</title>
+    <script type="text/javascript">
+    (function() {
+        var NUM_ROWS = 5;
+        var RADIUS = 20;
+        var COLORS = ["#d33", "#3d3", "#33d", "#dd3", "#3dd", "#d3d"];
+        var COLLAPSE_TICKS = 60;
+        var BUBBLE_MASS = 10;
+        var SHOOTER_LENGTH = 100;
+        var PROJECTILE_MASS = 500;
+
+        var Point = function(x, y) {
+            var obj = { x: x, y: y };
+            obj.add = function(b) { return Point(this.x + b.x, this.y + b.y); };
+            obj.sub = function(b) { return Point(this.x - b.x, this.y - b.y); };
+            obj.mul = function(k) { return Point(k*this.x, k*this.y); };
+            obj.div = function(k) { return Point(this.x/k, this.y/k); };
+            obj.length = function() { return Math.sqrt(this.x*this.x + this.y*this.y); };
+            obj.norm = function() { return this.div(this.length()); };
+            obj.dot = function(b) { return this.x*b.x + this.y*b.y; };
+            obj.crossZ = function(b) { return this.x*b.y - this.y*b.x; };
+
+            return obj;
+        };
+
+        var CircleEdge = function(r, deg) {
+            return Point(r*Math.cos(deg), r*Math.sin(deg));
+        };
+
+        var BubbleState = function(center) {
+
+            var Bubble = function(n, i, color) {
+                var obj = {};
+                obj.n = n;
+                obj.i = i;
+                obj.j = i % n;
+                obj.k = (i / n)|0;
+                obj.key = (n << 16) | i;
+                obj.r = RADIUS + RADIUS*(2*n - 1);
+                obj.color = !color ? COLORS[(Math.random()*COLORS.length)|0] : color;
+                obj.defaultColor = obj.color;
+                obj.collapseSource = null;
+                obj.collapsePosition = null;
+                obj.collapseFrame = 0;
+                obj.collapseRadius = RADIUS;
+
+                obj.collapsing = function(rotation) {
+                    var newBubble = Bubble(this.n, this.i, this.color);
+                    newBubble.collapseSource = this.position(rotation);
+                    newBubble.collapsePosition = newBubble.collapseSource;
+                    return newBubble;
+                };
+
+                obj.collapseTick = function(surface) {
+                    var dy = surface.height - this.collapseSource.y,
+                        dx = this.collapseSource.x > surface.width / 2 ? -50 : 50,
+                        progress = this.collapseFrame/COLLAPSE_TICKS,
+                        directionVector = Point(dx*progress, 8/3*dy*progress*progress - 5/3*dy*progress);
+
+                    var newBubble = Bubble(this.n, this.i, this.color);
+                    newBubble.collapseSource = this.collapseSource;
+                    newBubble.collapsePosition = this.collapseSource.add(directionVector);
+                    newBubble.collapseFrame = this.collapseFrame + 1;
+                    newBubble.collapseRadius = (1+0.5*progress)*RADIUS;
+                    return newBubble;
+                };
+
+                obj.position = function(offsetDeg) {
+                    var begin = center.add(CircleEdge(this.r, this.k*Math.PI/3 + offsetDeg)),
+                        end = center.add(CircleEdge(this.r, (this.k+1)*Math.PI/3 + offsetDeg)),
+                        step = end.sub(begin).div(this.n);
+
+                    return begin.add(step.mul(this.j));
+                };
+
+                obj.isAdjacent = function(other) {
+                    var bubblesOnRow = this.n*6,
+                        bubblesOnRowBelow = other.n*6;
+
+                    // Same row
+                    if (this.n == other.n) {
+                        return (other.i+1)%bubblesOnRowBelow == this.i ||
+                               other.i == (this.i+1)%bubblesOnRow;
+                    }
+                    // One row below
+                    else if (this.n - 1 == other.n) {
+                        var positionBelow = this.i - this.k;
+                        return (other.i == positionBelow - 1 && this.j > 0) ||
+                               other.i == positionBelow % bubblesOnRowBelow;
+                    }
+                    // Check for adjacent bubbles above by doing it the other way around
+                    else if (this.n + 1 == other.n) {
+                        return other.isAdjacent(this);
+                    }
+
+                    return false;
+                };
+
+                return obj;
+            };
+
+            var doesPositionExist = function(bubbles, candidate) {
+                return bubbles.filter(function(bubble) { return bubble.key == candidate.key; }).length > 0;
+            };
+
+            var obj = {};
+            obj.bubbles = [];
+            obj.collapsing = [];
+            obj.findBubble = function(pos, rotation) {
+                for (var i = 0; i < this.bubbles.length; i++) {
+                    var bubble = this.bubbles[i],
+                        bubblePosition = bubble.position(rotation),
+                        d = pos.sub(bubblePosition).length();
+
+                    if (d < 2*RADIUS) {
+                        return bubble;
+                    }
+                }
+
+                return null;
+            };
+            obj.traverse = function(targetBubble, criteria) {
+                var stack = [targetBubble];
+                var seen = {};
+                while (stack.length > 0) {
+                    var current = stack.pop();
+
+                    seen[current.key] = true;
+
+                    this.bubbles.forEach(function(bubble) {
+                        if (seen[bubble.key] === true) {
+                            return;
+                        }
+                        if (!current.isAdjacent(bubble)) {
+                            return;
+                        }
+                        if (criteria(current, bubble)) {
+                            return;
+                        }
+
+                        stack.push(bubble);
+                    });
+                }
+
+                return seen;
+            };
+            obj.collide = function(targetBubble, projectile, rotation) {
+                var candidateBubbles = [];
+                candidateBubbles.push(Bubble(targetBubble.n, targetBubble.i-1, projectile.color));
+                candidateBubbles.push(Bubble(targetBubble.n, targetBubble.i+1, projectile.color));
+                candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k, projectile.color));
+                candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k+1, projectile.color));
+
+                candidateBubbles = candidateBubbles.filter(function(bubble) { return !doesPositionExist(this.bubbles, bubble); }.bind(this));
+
+                for (var i = 0; i < candidateBubbles.length; i++) {
+                    var candidate = candidateBubbles[i],
+                        candidatePosition = candidate.position(rotation);
+
+                    candidate.targetDistance = candidatePosition.sub(projectile.position).norm();
+                }
+
+                candidateBubbles.sort(function(a,b) { return a.targetDistance <= b.targetDistance ? 1 : -1; })
+
+                var newBubble = candidateBubbles[0];
+
+                var hitSeen = this.traverse(newBubble, function(current, child) {
+                    return current.defaultColor != child.defaultColor;
+                });
+
+                var firstRowBubble = this.bubbles
+                    .filter(function(bubble) { return hitSeen[bubble.key] !== true })
+                    .filter(function(bubble) { return bubble.n === 1 })[0];
+
+                var orphanSeen = {};
+                if (firstRowBubble) {
+                    orphanSeen = this.traverse(firstRowBubble, function(current, child) {
+                        return hitSeen[child.key] === true;
+                    });
+                }
+
+                var remainingBubbles = this.bubbles
+                    .filter(function(bubble) { return hitSeen[bubble.key] !== true; })
+                    .filter(function(bubble) { return orphanSeen[bubble.key] === true; });
+
+                var collapsingBubbles = this.bubbles
+                    .filter(function(bubble) { return hitSeen[bubble.key] === true || orphanSeen[bubble.key] !== true; })
+                    .map(function(bubble) {
+                        return bubble.collapsing(rotation);
+                    });
+
+                if (Object.keys(hitSeen).length == 1) {
+                    remainingBubbles = remainingBubbles.concat([newBubble]);
+                } else {
+                    collapsingBubbles = collapsingBubbles.concat([newBubble.collapsing(rotation)]);
+                }
+
+                return {
+                    bubbles: remainingBubbles,
+                    collapsing: this.collapsing.concat(collapsingBubbles),
+                    findBubble: this.findBubble,
+                    collide: this.collide,
+                    momentOfInertia: this.momentOfInertia,
+                    addBubble: this.addBubble,
+                    traverse: this.traverse,
+                    tick: this.tick
+                };
+            };
+            obj.momentOfInertia = function() {
+                var momentOfInertia = 0;
+                for (var i = 0; i < this.bubbles.length; i++) {
+                    var bubble = this.bubbles[i],
+                        axisLength = bubble.position(0).sub(center).length();
+
+                    momentOfInertia += BUBBLE_MASS*axisLength*axisLength;
+                }
+
+                return momentOfInertia;
+            };
+            obj.tick = function(surface) {
+                if (this.collapsing.length == 0) {
+                    return this;
+                }
+
+                var newCollapsing = this.collapsing
+                    .map(function(bubble) {
+                        return bubble.collapseTick(surface);
+                    })
+                    .filter(function(bubble) {
+                        return bubble.collapseFrame < COLLAPSE_TICKS;
+                    });
+
+                return {
+                    bubbles: this.bubbles,
+                    collapsing: newCollapsing,
+                    findBubble: this.findBubble,
+                    collide: this.collide,
+                    momentOfInertia: this.momentOfInertia,
+                    traverse: this.traverse,
+                    tick: this.tick
+                };
+            };
+
+            for (var n = 1; n <= NUM_ROWS; n++) {
+                for (var i = 0; i < 6*n; i++) {
+                    obj.bubbles.push(Bubble(n, i));
+                }
+            }
+
+            return obj;
+        };
+
+        var ProjectileState = function(initialPosition) {
+            var obj = {};
+            obj.color = COLORS[(Math.random()*COLORS.length)|0];
+            obj.position = initialPosition;
+            obj.velocity = null;
+            obj.moving = false;
+
+            obj.shoot = function(velocity) {
+                return {
+                    color: this.color,
+                    position: this.position,
+                    velocity: velocity,
+                    moving: true,
+                    shoot: this.shoot,
+                    tick: this.tick
+                };
+            };
+
+            obj.tick = function(surface) {
+                var newPosition = this.position.add(this.velocity);
+                var newVelocity = this.velocity;
+                if (newPosition.x > surface.width - RADIUS) {
+                    newVelocity = Point(-this.velocity.x, this.velocity.y);
+                } else if (newPosition.x < RADIUS) {
+                    newVelocity = Point(-this.velocity.x, this.velocity.y);
+                }
+
+                if (newPosition.y > surface.height - RADIUS) {
+                    newVelocity = Point(this.velocity.x, -this.velocity.y);
+                } else if (newPosition.y < RADIUS) {
+                    newVelocity = Point(this.velocity.x, -this.velocity.y);
+                }
+
+                return {
+                    color: this.color,
+                    position: newPosition,
+                    velocity: newVelocity,
+                    moving: true,
+                    shoot: this.shoot,
+                    tick: this.tick
+                };
+            };
+
+            return obj;
+        };
+
+        var GameSurface = function(canvas) {
+            var ctx = canvas.getContext("2d");
+
+            var obj = {};
+            obj.canvasPosition = Point(canvas.getBoundingClientRect().left, canvas.getBoundingClientRect().top);
+            obj.width = canvas.width;
+            obj.height = canvas.height;
+            obj.center = Point(obj.width/2, obj.height/2);
+            obj.shooterPosition = Point(obj.width/2, 20);
+            obj.mousePosition = obj.shooterPosition.add(Point(0, 10));
+
+            obj.drawHexagon = function(offsetDeg) {
+                ctx.beginPath();
+                for (var i = 0; i <= 6; i++) {
+                    var p = this.center.add(CircleEdge(RADIUS, Math.PI*i/3 + offsetDeg));
+                    ctx.lineTo(p.x, p.y); // When there are no points in the path, the specification dictates that lineTo works as moveTo
+                }
+
+                ctx.fillStyle = "#555";
+                ctx.fill();
+            };
+
+            obj.drawBubbles = function(bubbleState, offsetDeg) {
+                bubbleState.bubbles.forEach(function(bubble) {
+                    var p = bubble.position(offsetDeg);
+
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 0.90*RADIUS, 0, 2*Math.PI);
+
+                    ctx.fillStyle = bubble.color;
+                    ctx.fill();
+                });
+            };
+
+            obj.drawCollapsingBubbles = function(bubbleState) {
+                bubbleState.collapsing.forEach(function(bubble) {
+                    var p = bubble.collapsePosition;
+
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 0.90*bubble.collapseRadius, 0, 2*Math.PI);
+
+                    ctx.fillStyle = bubble.color;
+                    ctx.fill();
+                });
+            };
+
+            obj.drawShooter = function() {
+                var shooterTarget = this.shooterPosition.add(this.mousePosition.sub(this.shooterPosition).norm().mul(SHOOTER_LENGTH));
+
+                ctx.beginPath();
+                ctx.moveTo(this.shooterPosition.x, this.shooterPosition.y);
+                ctx.lineTo(shooterTarget.x, shooterTarget.y)
+                ctx.stroke();
+            };
+
+            obj.drawProjectile = function(projectileState) {
+                ctx.beginPath();
+                ctx.arc(projectileState.position.x, projectileState.position.y, 0.90*RADIUS, 0, 2*Math.PI);
+
+                ctx.fillStyle = projectileState.color;
+                ctx.fill();
+            };
+
+            obj.draw = function(bubbleState, projectileState, offset) {
+                ctx.clearRect(0, 0, this.width, this.height);
+
+                this.drawProjectile(projectileState);
+                this.drawShooter(this.shooterPosition);
+                this.drawHexagon(offset);
+                this.drawBubbles(bubbleState, offset);
+                this.drawCollapsingBubbles(bubbleState);
+            };
+
+            canvas.addEventListener("click", function(e) {
+                this.onShoot();
+            }.bind(obj));
+            canvas.addEventListener("mousemove", function(e) {
+                this.mousePosition = Point(e.clientX, e.clientY).sub(this.canvasPosition);
+            }.bind(obj));
+
+            return obj;
+        };
+
+        window.addEventListener("load", function() {
+            var surface = GameSurface(document.querySelector("#bubblespinner-canvas")),
+                bubbleState = BubbleState(surface.center),
+                projectileState = ProjectileState(surface.shooterPosition),
+                rotation = 0,
+                angularSpeed = 0;
+
+            surface.onShoot = function() {
+                projectileState = projectileState.shoot(surface.mousePosition.sub(surface.shooterPosition).norm().mul(15));
+            };
+
+            var update = function() {
+                if (projectileState.moving) {
+                    projectileState = projectileState.tick(surface);
+
+                    var collision = bubbleState.findBubble(projectileState.position, rotation);
+                    if (collision) {
+                        var pos = collision.position(rotation).sub(surface.center),
+                            projectileMomentum = projectileState.velocity.mul(PROJECTILE_MASS);
+
+                        angularSpeed += pos.crossZ(projectileMomentum)/bubbleState.momentOfInertia();
+
+                        bubbleState = bubbleState.collide(collision, projectileState, rotation);
+
+                        projectileState = ProjectileState(surface.shooterPosition);
+                    }
+                }
+
+                bubbleState = bubbleState.tick(surface);
+
+                rotation += angularSpeed;
+                if (Math.abs(angularSpeed) > 0) {
+                    angularSpeed *= 0.98;
+                }
+                if (rotation > 2*Math.PI) {
+                    rotation = 0;
+                }
+
+                surface.draw(bubbleState, projectileState, rotation);
+                requestAnimationFrame(update);
+            };
+
+            update();
+        });
+    })();
+    </script>
+</head>
+<body>
+    <canvas id="bubblespinner-canvas" width="700" height="700"></canvas>
+</body>
+</html>
