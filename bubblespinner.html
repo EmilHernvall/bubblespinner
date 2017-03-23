@@ -19,9 +19,16 @@
         var COLLAPSE_TICKS = 60;
         var BUBBLE_MASS = 10;
         var SHOOTER_LENGTH = 100;
-        var PROJECTILE_MASS = 500;
+        var PROJECTILE_MASS = 250;
         var PROJECTILE_VELOCITY = 1/25;
         var DEBUG = false;
+
+        var ObjectJoin = function(copy, replace) {
+            var newObject = {};
+            Object.keys(copy).forEach(function(key) { newObject[key] = copy[key]; });
+            Object.keys(replace).forEach(function(key) { newObject[key] = replace[key]; });
+            return newObject;
+        };
 
         // Our pleasingly compact 2d-vector representation
         var Point = function(x, y) {
@@ -95,20 +102,11 @@
                     //
                     // Substituting the second of these into the first:
                     //
-                    //   a/4 + H - a + H = 0
-                    //   a/4 + 2H - a = 0
-                    //   (a-4a)/4 + 2H = 0
-                    //   -3a/4 + 2H = 0
-                    //   3a/4 = 2H
-                    //   a = 8/3*H
+                    //   a/4 + H - a + H = 0  =>  a = 8/3*H
                     //
                     // Which also yields b:
                     //
-                    //   a + b = H
-                    //   8/3*H + b = H
-                    //   b = H - 8/3*H
-                    //   b = (3H - 8H)/3
-                    //   b = -5/3*H
+                    //   a + b = H  =>  b = -5/3*H
                     //
                     // Thus:
                     //
@@ -172,6 +170,9 @@
 
             var obj = {};
 
+            obj.gameOver = false;
+            obj.score = 0;
+            obj.level = 1;
             obj.colors = COLORS; // The colors still in play (once all bubbles with a color have been removed, no more of that color will show up)
             obj.bubbles = []; // Bubbles still in play
             obj.collapsing = []; // Bubbles that has been removed from play, but are still being animated
@@ -321,18 +322,12 @@
                     .forEach(function(color) { colorMap[color] = true; });
 
                 // Return a new brand new state
-                return {
+                return ObjectJoin(this, {
+                    score: this.score + this.level * collapsingBubbles.length,
                     colors: Object.keys(colorMap),
                     bubbles: remainingBubbles,
                     collapsing: this.collapsing.concat(collapsingBubbles),
-                    findBubble: this.findBubble,
-                    collide: this.collide,
-                    momentOfInertia: this.momentOfInertia,
-                    addBubble: this.addBubble,
-                    traverse: this.traverse,
-                    tick: this.tick,
-                    randomColor: this.randomColor
-                };
+                });
             };
 
             // Calculate the moment of inertia around the axis of rotation for all live bubbles.
@@ -349,12 +344,7 @@
                 return momentOfInertia;
             };
 
-            // Update the position of collapsing bubbles, if there are any
-            obj.tick = function(surface) {
-                if (this.collapsing.length == 0) {
-                    return this;
-                }
-
+            obj.tick = function(rotation) {
                 var newCollapsing = this.collapsing
                     .map(function(bubble) {
                         return bubble.collapseTick(); // Update position
@@ -363,17 +353,51 @@
                         return bubble.collapseFrame < COLLAPSE_TICKS; // Remove the ones that have finished animating
                     });
 
-                return {
-                    colors: this.colors,
-                    bubbles: this.bubbles,
-                    collapsing: newCollapsing,
-                    findBubble: this.findBubble,
-                    collide: this.collide,
-                    momentOfInertia: this.momentOfInertia,
-                    traverse: this.traverse,
-                    tick: this.tick,
-                    randomColor: this.randomColor
-                };
+                var gameOver = this.bubbles.filter(function(bubble) {
+                    var p = bubble.position(rotation);
+                    if (p.x < RADIUS) {
+                        return true;
+                    } else if (p.x > 1 - RADIUS) {
+                        return true;
+                    } else if (p.y < RADIUS) {
+                        return true;
+                    } else if (p.y > 1 - RADIUS) {
+                        return true;
+                    } else {
+                        return false;
+                    }
+                }).length > 0;
+
+                return ObjectJoin(this, {
+                    gameOver: gameOver,
+                    collapsing: newCollapsing
+                });
+            };
+
+            obj.setupBubbles = function() {
+                for (var n = 1; n <= NUM_ROWS; n++) {
+                    for (var i = 0; i < 6*n; i++) {
+                        this.bubbles.push(Bubble(n, i, this.randomColor()));
+                    }
+                }
+            };
+
+            obj.nextLevel = function() {
+                var newState = ObjectJoin(this, {
+                    gameOver: false,
+                    level: this.level + 1,
+                    colors: COLORS,
+                    bubbles: [],
+                    collapsing: []
+                });
+
+                newState.setupBubbles();
+
+                return newState;
+            };
+
+            obj.levelComplete = function() {
+                return this.bubbles.length == 0;
             };
 
             // Return a random color from the colors still ive
@@ -382,11 +406,7 @@
             };
 
             // Create our initial set of bubbles
-            for (var n = 1; n <= NUM_ROWS; n++) {
-                for (var i = 0; i < 6*n; i++) {
-                    obj.bubbles.push(Bubble(n, i, obj.randomColor()));
-                }
-            }
+            obj.setupBubbles();
 
             return obj;
         };
@@ -400,14 +420,10 @@
 
             // Create a new projectile state indicating that a shot is in progress
             obj.shoot = function(direction) {
-                return {
-                    color: this.color,
-                    position: this.position,
-                    direction: direction,
+                return ObjectJoin(this, {
                     moving: true,
-                    shoot: this.shoot,
-                    tick: this.tick
-                };
+                    direction: direction
+                });
             };
 
             // Update the projectile position and return a new projectile state
@@ -430,14 +446,11 @@
                     newDirection = Point(this.direction.x, -this.direction.y);
                 }
 
-                return {
-                    color: this.color,
+                return ObjectJoin(this, {
                     position: newPosition,
                     direction: newDirection,
-                    moving: true,
-                    shoot: this.shoot,
-                    tick: this.tick
-                };
+                    moving: true
+                });
             };
 
             return obj;
@@ -537,23 +550,78 @@
                 this.drawBubble(projectileState.position.mul(this.scaleFactor), 0, projectileState.color);
             };
 
+            obj.drawGameOver = function(bubbleState) {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "rgba(255, 100, 100, 1)";
+                ctx.font = "48px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("GAME OVER", canvas.width/2, 1*canvas.height/3);
+
+                ctx.font = "20px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillStyle = "rgba(255, 255, 255, 1)";
+                ctx.fillText("Your score was: " + bubbleState.score, canvas.width/2, canvas.height/2);
+
+                ctx.font = "24px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillStyle = "rgba(100, 255, 100, 1)";
+                ctx.fillText("Click to Retry", canvas.width/2, 2*canvas.height/3);
+            };
+
+            obj.drawLevelComplete = function(bubbleState) {
+                ctx.fillStyle = "rgba(0, 0, 0, 0.8)";
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = "rgba(100, 255, 100, 1)";
+                ctx.font = "48px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("Level Complete!", canvas.width/2, 1*canvas.height/3);
+
+                ctx.font = "20px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillStyle = "rgba(255, 255, 255, 1)";
+                ctx.fillText("Your score is: " + bubbleState.score, canvas.width/2, canvas.height/2);
+
+                ctx.font = "24px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillStyle = "rgba(100, 255, 100, 1)";
+                ctx.fillText("Click to play next level", canvas.width/2, 2*canvas.height/3);
+            };
+
             obj.draw = function(bubbleState, projectileState, rotation) {
                 ctx.clearRect(0, 0, this.width, this.height);
                 ctx.fillStyle = "#eee";
                 ctx.fillRect(0, RADIUS*this.scaleFactor, this.width, this.height-20);
 
                 this.drawHexagon(rotation);
-                this.drawProjectile(projectileState);
-                this.drawShooter(this.shooterPosition);
-                this.drawBubbles(bubbleState, rotation);
+                if (!bubbleState.levelComplete()) {
+                    this.drawProjectile(projectileState);
+                    this.drawShooter(this.shooterPosition);
+                    this.drawBubbles(bubbleState, rotation);
+                }
                 this.drawCollapsingBubbles(bubbleState);
+
+                if (bubbleState.gameOver) {
+                    this.drawGameOver(bubbleState);
+                } else if (bubbleState.bubbles.length == 0) {
+                    this.drawLevelComplete(bubbleState);
+                }
             };
 
             canvas.addEventListener("click", function(e) {
-                this.onShoot();
+                this.onClick();
             }.bind(obj));
             canvas.addEventListener("mousemove", function(e) {
                 this.mousePosition = Point(e.clientX, e.clientY).sub(this.canvasPosition);
+                if (this.mousePosition.y < RADIUS*this.scaleFactor) {
+                    this.mousePosition.y = RADIUS*this.scaleFactor;
+                }
             }.bind(obj));
             canvas.addEventListener("touchmove", function(e) {
                 this.mousePosition = Point(e.touches[0].clientX, e.touches[0].clientY).sub(this.canvasPosition);
@@ -561,7 +629,7 @@
                 e.stopPropagation();
             }.bind(obj));
             canvas.addEventListener("touchend", function(e) {
-                this.onShoot();
+                this.onClick();
                 e.preventDefault();
                 e.stopPropagation();
             }.bind(obj));
@@ -580,14 +648,34 @@
 
         window.addEventListener("load", function() {
             var surface = GameSurface(document.querySelector("#bubblespinner-canvas")),
-                bubbleState = BubbleState(surface.center),
+                bubbleState = BubbleState(),
                 projectileState = ProjectileState(bubbleState),
                 rotation = 0,
                 angularVelocity = 0,
                 tick = 0,
                 tickInterval = 1;
 
-            surface.onShoot = function() {
+            surface.onClick = function() {
+                if (bubbleState.gameOver) {
+                    bubbleState = BubbleState();
+                    projectileState = ProjectileState(bubbleState);
+                    rotation = 0;
+                    angularVelocity = 0;
+                    tick = 0;
+                    tickInterval = 1;
+
+                    update();
+                    return;
+                } else if (bubbleState.levelComplete()) {
+                    bubbleState = bubbleState.nextLevel();
+                    projectileState = ProjectileState(bubbleState);
+                    rotation = 0;
+                    angularVelocity = 0;
+                    tick = 0;
+                    tickInterval = 1;
+                    return;
+                }
+
                 if (projectileState.moving) {
                     return;
                 }
@@ -667,8 +755,8 @@
                     }
                 }
 
-                // Animate collapsing bubbles
-                bubbleState = bubbleState.tick(surface);
+                // Animate collapsing bubbles, check for game over
+                bubbleState = bubbleState.tick(rotation);
 
                 // Rotate the bubbles, resetting to 0 as needed
                 rotation += angularVelocity;
@@ -683,6 +771,10 @@
 
                 // Draw the game, and schedule a new update
                 surface.draw(bubbleState, projectileState, rotation);
+                if (bubbleState.gameOver) {
+                    return;
+                }
+
                 requestAnimationFrame(update);
             };
 
