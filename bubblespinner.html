@@ -12,8 +12,10 @@
 
     <script type="text/javascript">
     (function() {
+        var MARGIN = 50;
+
         var NUM_ROWS = 5;
-        var RADIUS = 1/30;
+        var RADIUS = 1/35;
         var DRAW_RADIUS = 0.9*RADIUS;
         var COLORS = ["#dd3333", "#33dd33", "#3333dd", "#dddd33", "#33dddd", "#dd33dd"];
         var COLLAPSE_TICKS = 60;
@@ -23,7 +25,7 @@
         var PROJECTILE_VELOCITY = 1/25;
         var DEBUG = false;
 
-        var ObjectJoin = function(copy, replace) {
+        var Extend = function(copy, replace) {
             var newObject = {};
             Object.keys(copy).forEach(function(key) { newObject[key] = copy[key]; });
             Object.keys(replace).forEach(function(key) { newObject[key] = replace[key]; });
@@ -322,7 +324,7 @@
                     .forEach(function(color) { colorMap[color] = true; });
 
                 // Return a new brand new state
-                return ObjectJoin(this, {
+                return Extend(this, {
                     score: this.score + this.level * collapsingBubbles.length,
                     colors: Object.keys(colorMap),
                     bubbles: remainingBubbles,
@@ -368,7 +370,7 @@
                     }
                 }).length > 0;
 
-                return ObjectJoin(this, {
+                return Extend(this, {
                     gameOver: gameOver,
                     collapsing: newCollapsing
                 });
@@ -383,7 +385,7 @@
             };
 
             obj.nextLevel = function() {
-                var newState = ObjectJoin(this, {
+                var newState = Extend(this, {
                     gameOver: false,
                     level: this.level + 1,
                     colors: COLORS,
@@ -414,13 +416,13 @@
         var ProjectileState = function(bubbleState) {
             var obj = {};
             obj.color = bubbleState.randomColor();
-            obj.position = Point(0.5, DRAW_RADIUS);
+            obj.position = Point(0.5, RADIUS);
             obj.direction = Point(0, 1.0);
             obj.moving = false;
 
             // Create a new projectile state indicating that a shot is in progress
             obj.shoot = function(direction) {
-                return ObjectJoin(this, {
+                return Extend(this, {
                     moving: true,
                     direction: direction
                 });
@@ -446,7 +448,7 @@
                     newDirection = Point(this.direction.x, -this.direction.y);
                 }
 
-                return ObjectJoin(this, {
+                return Extend(this, {
                     position: newPosition,
                     direction: newDirection,
                     moving: true
@@ -477,12 +479,13 @@
                 canvas.width = document.body.offsetWidth;
                 canvas.height = document.body.offsetWidth;
 
-                this.canvasPosition = Point(canvas.getBoundingClientRect().left, canvas.getBoundingClientRect().top);
-                this.width = canvas.width;
-                this.height = canvas.height;
-                this.center = Point(this.width/2, this.height/2);
-                this.scaleFactor = this.width;
-                this.shooterPosition = Point(this.width/2, RADIUS*this.scaleFactor);
+                this.canvasPosition = Point(canvas.getBoundingClientRect().left + MARGIN, canvas.getBoundingClientRect().top + MARGIN);
+                this.width = canvas.width - 2*MARGIN;
+                this.height = canvas.height - 2*MARGIN;
+                this.center = Point(canvas.width/2, canvas.height/2);
+                this.scaleFactor = canvas.width - 2*MARGIN;
+                this.translate = Point(MARGIN, MARGIN);
+                this.shooterPosition = Point(this.center.x, MARGIN+RADIUS*this.scaleFactor);
                 this.mousePosition = this.shooterPosition.add(Point(0, 1));
             };
 
@@ -513,7 +516,7 @@
 
             obj.drawBubbles = function(bubbleState, rotation) {
                 bubbleState.bubbles.forEach(function(bubble) {
-                    var p = bubble.position(rotation).mul(this.scaleFactor);
+                    var p = bubble.position(rotation).mul(this.scaleFactor).add(this.translate);
                     this.drawBubble(p, rotation, bubble.color);
 
                     if (DEBUG) {
@@ -527,7 +530,7 @@
 
             obj.drawCollapsingBubbles = function(bubbleState) {
                 bubbleState.collapsing.forEach(function(bubble) {
-                    var p = bubble.collapsePosition.mul(this.scaleFactor);
+                    var p = bubble.collapsePosition.mul(this.scaleFactor).add(this.translate);
 
                     ctx.beginPath();
                     ctx.arc(p.x, p.y, 0.90*bubble.collapseRadius*this.scaleFactor, 0, 2*Math.PI);
@@ -538,7 +541,8 @@
             };
 
             obj.drawShooter = function() {
-                var shooterTarget = this.shooterPosition.add(this.mousePosition.sub(this.shooterPosition).norm().mul(SHOOTER_LENGTH));
+                var shooterVector = this.mousePosition.sub(this.shooterPosition).norm().mul(SHOOTER_LENGTH),
+                    shooterTarget = this.shooterPosition.add(shooterVector);
 
                 ctx.beginPath();
                 ctx.moveTo(this.shooterPosition.x, this.shooterPosition.y);
@@ -547,7 +551,7 @@
             };
 
             obj.drawProjectile = function(projectileState) {
-                this.drawBubble(projectileState.position.mul(this.scaleFactor), 0, projectileState.color);
+                this.drawBubble(projectileState.position.mul(this.scaleFactor).add(this.translate), 0, projectileState.color);
             };
 
             obj.drawGameOver = function(bubbleState) {
@@ -595,9 +599,15 @@
             };
 
             obj.draw = function(bubbleState, projectileState, rotation) {
-                ctx.clearRect(0, 0, this.width, this.height);
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.fillStyle = "#eee";
-                ctx.fillRect(0, RADIUS*this.scaleFactor, this.width, this.height-20);
+                ctx.fillRect(MARGIN, MARGIN, this.width, this.height-20);
+
+                ctx.font = "24px sans-serif";
+                ctx.textAlign = "left";
+                ctx.textBaseline = "bottom";
+                ctx.fillStyle = "rgba(50, 50, 50, 1)";
+                ctx.fillText("Score: " + bubbleState.score, MARGIN, MARGIN);
 
                 this.drawHexagon(rotation);
                 if (!bubbleState.levelComplete()) {
@@ -615,16 +625,18 @@
             };
 
             canvas.addEventListener("click", function(e) {
-                this.onClick();
+                var shotDirection = this.mousePosition.sub(this.shooterPosition).norm();
+                console.log(shotDirection);
+                this.onClick(shotDirection);
             }.bind(obj));
             canvas.addEventListener("mousemove", function(e) {
-                this.mousePosition = Point(e.clientX, e.clientY).sub(this.canvasPosition);
-                if (this.mousePosition.y < RADIUS*this.scaleFactor) {
-                    this.mousePosition.y = RADIUS*this.scaleFactor;
+                this.mousePosition = Point(e.clientX, e.clientY).sub(this.canvasPosition).add(this.translate);
+                if (this.mousePosition.y < MARGIN) {
+                    this.mousePosition.y = MARGIN;
                 }
             }.bind(obj));
             canvas.addEventListener("touchmove", function(e) {
-                this.mousePosition = Point(e.touches[0].clientX, e.touches[0].clientY).sub(this.canvasPosition);
+                this.mousePosition = Point(e.touches[0].clientX, e.touches[0].clientY).sub(this.canvasPosition).add(this.translate);
                 e.preventDefault();
                 e.stopPropagation();
             }.bind(obj));
@@ -655,7 +667,7 @@
                 tick = 0,
                 tickInterval = 1;
 
-            surface.onClick = function() {
+            surface.onClick = function(shotDirection) {
                 if (bubbleState.gameOver) {
                     bubbleState = BubbleState();
                     projectileState = ProjectileState(bubbleState);
@@ -680,7 +692,6 @@
                     return;
                 }
 
-                var shotDirection = surface.mousePosition.sub(surface.shooterPosition).norm();
                 projectileState = projectileState.shoot(shotDirection);
 
                 if (DEBUG) {
