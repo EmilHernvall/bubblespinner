@@ -12,17 +12,18 @@
 
     <script type="text/javascript">
     (function() {
-        var MARGIN = 50;
+        var MARGIN = 1/20;
 
         var NUM_ROWS = 5;
         var RADIUS = 1/35;
         var DRAW_RADIUS = 0.9*RADIUS;
         var COLORS = ["#dd3333", "#33dd33", "#3333dd", "#dddd33", "#33dddd", "#dd33dd"];
-        var COLLAPSE_TICKS = 60;
-        var BUBBLE_MASS = 10;
-        var SHOOTER_LENGTH = 100;
-        var PROJECTILE_MASS = 250;
+        var COLLAPSE_TICKS = 30;
+        var BUBBLE_MASS = 2;
+        var SHOOTER_LENGTH = 1/20;
+        var PROJECTILE_MASS = 50;
         var PROJECTILE_VELOCITY = 1/25;
+        var GRAVITY = 1/1000;
         var DEBUG = false;
 
         var Extend = function(copy, replace) {
@@ -43,6 +44,7 @@
             obj.norm = function() { return this.div(this.length()); };
             obj.dot = function(b) { return this.x*b.x + this.y*b.y; };
             obj.crossZ = function(b) { return this.x*b.y - this.y*b.x; };
+            obj.perp = function(z) { return Point(z*this.y, -z*this.x); }
 
             return obj;
         };
@@ -62,66 +64,39 @@
             obj.color = color;
 
             // Collapse state, for keeping track of position when the bubble is falling of the grid
-            obj.collapseSource = null; // Starting coordinates, for use when interpolating position
             obj.collapsePosition = null; // Current position, where the ball should be drawn
+            obj.collapseVelocity = null;
             obj.collapseFrame = 0; // The number of ticks since the start of the collapse
             obj.collapseRadius = RADIUS; // The current radius, since we're changing it a bit during the course of collapse
 
             // Return a collapsing version of this bubble
-            obj.collapsing = function(rotation) {
-                var newBubble = Bubble(this.n, this.i, this.color);
-                newBubble.collapseSource = this.position(rotation);
-                newBubble.collapsePosition = newBubble.collapseSource;
-                return newBubble;
+            obj.collapsing = function(rotation, angularVelocity, shotVelocity, bubblesAffected) {
+                // Calculate the velocity from rotation around the axis
+                var rotationalVelocity = this.velocity(rotation, angularVelocity);
+
+                // Calculate the velocity given by the collision with the projectile,
+                // based on conservation of momentum. The momentum of the incoming
+                // projectile is split equally across all the bubbles coming loose.
+                // This velocity is to high for a nice animation, so we scale it
+                // down a bit, completely arbitrarily.
+                var projectileInducedVelocity = shotVelocity.mul(PROJECTILE_MASS)
+                    .div(10*bubblesAffected*BUBBLE_MASS);
+
+                return Extend(this, {
+                    collapsePosition: this.position(rotation),
+                    collapseVelocity: rotationalVelocity.add(projectileInducedVelocity)
+                });
             };
 
             // Perform the next tick of the collapse animation
             obj.collapseTick = function() {
-                var dy = 1.0 - this.collapseSource.y, // distance to cover in terms of y
-                    dx = this.collapseSource.x > 1/2 ? -1/5 : 1/5, // distance to cover in terms of x
-                    progress = this.collapseFrame/COLLAPSE_TICKS, // progress of the animation in range 0 - 1
-                    // We parameterize the collapse as (x(t), y(t)), and do simple linear interpolation of x.
-                    // For y(t), I wanted it to bounce a bit upwards before falling. Consider the equation
-                    //
-                    //     y(t) = a*t^2 + b*t + c
-                    //
-                    // with the boundary conditions
-                    //
-                    //     y(0) = 0
-                    //     y(1/4) = -H/4    (since we want a slight upwards bounce)
-                    //     y(1) = H
-                    //
-                    // Then:
-                    //
-                    //    y(0) = 0  =>  0 = a*0 + b*0 + c  =>  c = 0
-                    //    y(1/4) = -H/4  =>  -H/4 = a/16 + b/4 + c
-                    //    y(1) = H  =>  H  = a + b + c
-                    //
-                    // Or, rearranging a bit:
-                    //
-                    //    a/4 + b + H = 0
-                    //    a + b = H
-                    //
-                    // Substituting the second of these into the first:
-                    //
-                    //   a/4 + H - a + H = 0  =>  a = 8/3*H
-                    //
-                    // Which also yields b:
-                    //
-                    //   a + b = H  =>  b = -5/3*H
-                    //
-                    // Thus:
-                    //
-                    //   y(t) = 8/3*H*t^2 - 5/3*H*t
-                    //
-                    directionVector = Point(dx*progress, 8/3*dy*progress*progress - 5/3*dy*progress);
-
-                var newBubble = Bubble(this.n, this.i, this.color);
-                newBubble.collapseSource = this.collapseSource;
-                newBubble.collapsePosition = this.collapseSource.add(directionVector);
-                newBubble.collapseFrame = this.collapseFrame + 1;
-                newBubble.collapseRadius = (1+0.5*progress)*RADIUS; // Animate radius slightly during collapse
-                return newBubble;
+                var progress = this.collapseFrame / COLLAPSE_TICKS;
+                return Extend(this, {
+                    collapsePosition: this.collapsePosition.add(this.collapseVelocity),
+                    collapseVelocity: this.collapseVelocity.add(Point(0, GRAVITY)),
+                    collapseFrame: this.collapseFrame + 1,
+                    collapseRadius: (1+1*progress)*RADIUS // Animate radius slightly during collapse
+                });
             };
 
             // Calculate the position of this bubble based on rotation
@@ -137,6 +112,13 @@
                     step = end.sub(begin).div(this.n);
 
                 return begin.add(step.mul(this.j));
+            };
+
+            obj.velocity = function(rotation, angularVelocity) {
+                var a = this.position(rotation),
+                    b = this.position(rotation+angularVelocity);
+
+                return b.sub(a);
             };
 
             // Return true of the passed bubble is adjacent to this one. This was on the
@@ -223,7 +205,7 @@
             };
 
             // Handle a collision
-            obj.collide = function(targetBubble, projectile, rotation) {
+            obj.collide = function(targetBubble, projectile, rotation, angularVelocity) {
 
                 // We start off by constructing all possible new bubble positions
                 var candidateBubbles = [];
@@ -308,13 +290,14 @@
 
                     // The collapsing bubbles must either be hit, or orphans
                     var collapsingBubbles = this.bubbles
-                        .filter(function(bubble) { return hits[bubble.key] === true || unorphaned[bubble.key] !== true; })
-                        .map(function(bubble) {
-                            return bubble.collapsing(rotation);
+                        .filter(function(bubble) { return hits[bubble.key] === true || unorphaned[bubble.key] !== true; });
+
+                    collapsingBubbles = collapsingBubbles.map(function(bubble) {
+                            return bubble.collapsing(rotation, angularVelocity, projectile.velocity(), collapsingBubbles.length+1);
                         });
 
                     // Finally, append the new bubble added during this collision to the collapsing list
-                    collapsingBubbles = collapsingBubbles.concat([newBubble.collapsing(rotation)]);
+                    collapsingBubbles = collapsingBubbles.concat([newBubble.collapsing(rotation, angularVelocity, projectile.velocity(), collapsingBubbles.length+1)]);
                 }
 
                 // Update the list of remaining colors
@@ -428,11 +411,15 @@
                 });
             };
 
+            obj.velocity = function() {
+                return this.direction.mul(PROJECTILE_VELOCITY);
+            };
+
             // Update the projectile position and return a new projectile state
             obj.tick = function(surface) {
 
                 // Calculate the next position by adding our velocity vector to the current position
-                var newPosition = this.position.add(this.direction.mul(PROJECTILE_VELOCITY));
+                var newPosition = this.position.add(this.velocity());
 
                 // Check if we are going out of bounds, and reflect if necessary
                 var newDirection = this.direction;
@@ -443,9 +430,9 @@
                 }
 
                 if (newPosition.y > 1 - RADIUS) {
-                    newDirection = Point(this.direction.x, -this.direction.y);
+                    newDirection = Point(this.newDirection.x, -this.newDirection.y);
                 } else if (newPosition.y < RADIUS) {
-                    newDirection = Point(this.direction.x, -this.direction.y);
+                    newDirection = Point(this.newDirection.x, -this.newDirection.y);
                 }
 
                 return Extend(this, {
@@ -476,16 +463,17 @@
             };
 
             obj.updateSize = function() {
-                canvas.width = document.body.offsetWidth;
-                canvas.height = document.body.offsetWidth;
+                var size = Math.min(window.innerWidth, window.innerHeight);
+                canvas.width = size;
+                canvas.height = size;
 
-                this.canvasPosition = Point(canvas.getBoundingClientRect().left + MARGIN, canvas.getBoundingClientRect().top + MARGIN);
-                this.width = canvas.width - 2*MARGIN;
-                this.height = canvas.height - 2*MARGIN;
-                this.center = Point(canvas.width/2, canvas.height/2);
-                this.scaleFactor = canvas.width - 2*MARGIN;
-                this.translate = Point(MARGIN, MARGIN);
-                this.shooterPosition = Point(this.center.x, MARGIN+RADIUS*this.scaleFactor);
+                this.scaleFactor = (1-2*MARGIN)*size;
+                this.margin = MARGIN*size;
+                this.canvasPosition = Point(canvas.getBoundingClientRect().left + this.margin, canvas.getBoundingClientRect().top + this.margin);
+                this.size = size - 2*this.margin;
+                this.center = Point(size/2, size/2);
+                this.translate = Point(this.margin, this.margin);
+                this.shooterPosition = Point(this.center.x, this.margin+RADIUS*this.scaleFactor);
                 this.mousePosition = this.shooterPosition.add(Point(0, 1));
             };
 
@@ -500,16 +488,16 @@
                 ctx.fill();
             };
 
-            obj.drawBubble = function(p, rotation, color) {
-                var p2 = p.add(CircleEdge(0.5*RADIUS*this.scaleFactor, -Math.PI/4 + rotation));
+            obj.drawBubble = function(p, rotation, color, radius) {
+                var p2 = p.add(CircleEdge(0.5*radius*this.scaleFactor, -Math.PI/4 + rotation));
 
                 ctx.beginPath();
-                ctx.arc(p.x, p.y, DRAW_RADIUS*this.scaleFactor, 0, 2*Math.PI);
+                ctx.arc(p.x, p.y, radius*this.scaleFactor, 0, 2*Math.PI);
                 ctx.fillStyle = color;
                 ctx.fill();
 
                 ctx.beginPath();
-                ctx.arc(p2.x, p2.y, 0.30*RADIUS*this.scaleFactor, 0, 2*Math.PI);
+                ctx.arc(p2.x, p2.y, 0.30*radius*this.scaleFactor, 0, 2*Math.PI);
                 ctx.fillStyle = colorShift(color, 1.1);
                 ctx.fill();
             };
@@ -517,9 +505,10 @@
             obj.drawBubbles = function(bubbleState, rotation) {
                 bubbleState.bubbles.forEach(function(bubble) {
                     var p = bubble.position(rotation).mul(this.scaleFactor).add(this.translate);
-                    this.drawBubble(p, rotation, bubble.color);
+                    this.drawBubble(p, rotation, bubble.color, DRAW_RADIUS);
 
                     if (DEBUG) {
+                        ctx.font = "10px sans-serif";
                         ctx.textAlign = "center";
                         ctx.textBaseline = "middle";
                         ctx.fillStyle = "#000";
@@ -532,26 +521,23 @@
                 bubbleState.collapsing.forEach(function(bubble) {
                     var p = bubble.collapsePosition.mul(this.scaleFactor).add(this.translate);
 
-                    ctx.beginPath();
-                    ctx.arc(p.x, p.y, 0.90*bubble.collapseRadius*this.scaleFactor, 0, 2*Math.PI);
-
-                    ctx.fillStyle = bubble.color;
-                    ctx.fill();
+                    this.drawBubble(p, 0, bubble.color, bubble.collapseRadius);
                 }.bind(this));
             };
 
             obj.drawShooter = function() {
-                var shooterVector = this.mousePosition.sub(this.shooterPosition).norm().mul(SHOOTER_LENGTH),
+                var shooterVector = this.mousePosition.sub(this.shooterPosition).norm().mul(SHOOTER_LENGTH*this.scaleFactor),
                     shooterTarget = this.shooterPosition.add(shooterVector);
 
                 ctx.beginPath();
                 ctx.moveTo(this.shooterPosition.x, this.shooterPosition.y);
                 ctx.lineTo(shooterTarget.x, shooterTarget.y)
+                ctx.strokeStyle = "#000";
                 ctx.stroke();
             };
 
             obj.drawProjectile = function(projectileState) {
-                this.drawBubble(projectileState.position.mul(this.scaleFactor).add(this.translate), 0, projectileState.color);
+                this.drawBubble(projectileState.position.mul(this.scaleFactor).add(this.translate), 0, projectileState.color, DRAW_RADIUS);
             };
 
             obj.drawGameOver = function(bubbleState) {
@@ -600,14 +586,15 @@
 
             obj.draw = function(bubbleState, projectileState, rotation) {
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = "#eee";
-                ctx.fillRect(MARGIN, MARGIN, this.width, this.height-20);
 
                 ctx.font = "24px sans-serif";
                 ctx.textAlign = "left";
                 ctx.textBaseline = "bottom";
                 ctx.fillStyle = "rgba(50, 50, 50, 1)";
-                ctx.fillText("Score: " + bubbleState.score, MARGIN, MARGIN);
+                ctx.fillText("Score: " + bubbleState.score, this.margin, this.margin);
+
+                ctx.fillStyle = "#eee";
+                ctx.fillRect(this.margin, this.margin, this.size, this.size);
 
                 this.drawHexagon(rotation);
                 if (!bubbleState.levelComplete()) {
@@ -626,13 +613,12 @@
 
             canvas.addEventListener("click", function(e) {
                 var shotDirection = this.mousePosition.sub(this.shooterPosition).norm();
-                console.log(shotDirection);
                 this.onClick(shotDirection);
             }.bind(obj));
             canvas.addEventListener("mousemove", function(e) {
                 this.mousePosition = Point(e.clientX, e.clientY).sub(this.canvasPosition).add(this.translate);
-                if (this.mousePosition.y < MARGIN) {
-                    this.mousePosition.y = MARGIN;
+                if (this.mousePosition.y < this.margin) {
+                    this.mousePosition.y = this.margin;
                 }
             }.bind(obj));
             canvas.addEventListener("touchmove", function(e) {
@@ -641,7 +627,8 @@
                 e.stopPropagation();
             }.bind(obj));
             canvas.addEventListener("touchend", function(e) {
-                this.onClick();
+                var shotDirection = this.mousePosition.sub(this.shooterPosition).norm();
+                this.onClick(shotDirection);
                 e.preventDefault();
                 e.stopPropagation();
             }.bind(obj));
@@ -761,7 +748,7 @@
                         angularVelocity += pos.crossZ(projectileMomentum)/bubbleState.momentOfInertia();
 
                         // Update bubble state based on the collision, and reset our projectile state
-                        bubbleState = bubbleState.collide(hitBubble, projectileState, rotation);
+                        bubbleState = bubbleState.collide(hitBubble, projectileState, rotation, angularVelocity);
                         projectileState = ProjectileState(bubbleState);
                     }
                 }
@@ -771,8 +758,11 @@
 
                 // Rotate the bubbles, resetting to 0 as needed
                 rotation += angularVelocity;
-                if (rotation > 2*Math.PI) {
-                    rotation = 0;
+                while (rotation > 2*Math.PI) {
+                    rotation -= 2*Math.PI;
+                }
+                while (rotation < -2*Math.PI) {
+                    rotation += 2*Math.PI;
                 }
 
                 // Decrease angular velocity exponentially
