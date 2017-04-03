@@ -26,7 +26,7 @@
         var PROJECTILE_VELOCITY = 1/25;
         var GRAVITY = 1/1000;
         var MAX_BOUNCES = 10;
-        var DEBUG = true;
+        var DEBUG = false;
 
         var Extend = function(copy, replace) {
             var newObject = {};
@@ -46,7 +46,6 @@
             obj.norm = function() { return this.div(this.length()); };
             obj.dot = function(b) { return this.x*b.x + this.y*b.y; };
             obj.crossZ = function(b) { return this.x*b.y - this.y*b.x; };
-            obj.perp = function(z) { return Point(z*this.y, -z*this.x); }
 
             return obj;
         };
@@ -123,29 +122,41 @@
                 return b.sub(a);
             };
 
-            // Return true of the passed bubble is adjacent to this one. This was on the
-            // trickiest things in the whole process of building this game.
+            obj.getAdjacentPositions = function() {
+                var neighbours = [];
+
+                var bubblesOnCurrentRow = 6*this.n,
+                    bubblesOnRowAbove = 6*(this.n+1),
+                    bubblesOnRowBelow = 6*(this.n-1);
+
+                // There are always two bubbles on the same row
+                neighbours.push({ n: this.n, i: (this.i+1) % bubblesOnCurrentRow });
+                neighbours.push({ n: this.n, i: (this.i+bubblesOnCurrentRow-1) % bubblesOnCurrentRow });
+
+                // Bubbles with j=0 (the first of each group) has three above and one below
+                if (this.j == 0) {
+                    neighbours.push({ n: this.n+1, i: ((this.n+1)*this.k-1+bubblesOnRowAbove) % bubblesOnRowAbove });
+                    neighbours.push({ n: this.n+1, i: (this.n+1)*this.k % bubblesOnRowAbove });
+                    neighbours.push({ n: this.n+1, i: ((this.n+1)*this.k+1) % bubblesOnRowAbove });
+                    if (this.n > 1) { neighbours.push({ n: this.n-1, i: (this.n-1)*this.k % bubblesOnRowBelow }); }
+                }
+                // All other positions have two below and two above
+                else {
+                    neighbours.push({ n: this.n+1, i: ((this.n+1)*this.k+this.j) % bubblesOnRowAbove });
+                    neighbours.push({ n: this.n+1, i: ((this.n+1)*this.k+this.j+1) % bubblesOnRowAbove });
+                    if (this.n > 1) {
+                        neighbours.push({ n: this.n-1, i: ((this.n-1)*this.k+this.j-1+bubblesOnRowBelow) % bubblesOnRowBelow });
+                        neighbours.push({ n: this.n-1, i: ((this.n-1)*this.k+this.j) % bubblesOnRowBelow });
+                    }
+                }
+
+                return neighbours;
+            };
+
             obj.isAdjacent = function(other) {
-                var bubblesOnRow = this.n*6,
-                    bubblesOnRowBelow = other.n*6;
-
-                // Same row
-                if (this.n == other.n) {
-                    return (other.i+1)%bubblesOnRowBelow == this.i ||
-                           other.i == (this.i+1)%bubblesOnRow;
-                }
-                // One row below
-                else if (this.n - 1 == other.n) {
-                    var positionBelow = this.i - this.k;
-                    return (other.i == positionBelow - 1 && this.j > 0) ||
-                           other.i == positionBelow % bubblesOnRowBelow;
-                }
-                // Check for adjacent bubbles above by doing it the other way around
-                else if (this.n + 1 == other.n) {
-                    return other.isAdjacent(this);
-                }
-
-                return false;
+                return this.getAdjacentPositions()
+                    .filter(function(bubble) { return other.n == bubble.n && other.i == bubble.i; })
+                    .length > 0;
             };
 
             return obj;
@@ -163,19 +174,37 @@
             obj.bubbles = []; // Bubbles still in play
             obj.collapsing = []; // Bubbles that has been removed from play, but are still being animated
 
-            // Find a bubble that intersects the projectile at its current position, if there is one
-            obj.findBubble = function(pos, rotation) {
+            // Find an object that intersects the projectile at its current position, if there is one
+            obj.checkForCollision = function(pos, rotation) {
+
+                // Check the center axis
+                var distanceFromHexagon = pos.sub(Point(0.5, 0.5)).length();
+                if (distanceFromHexagon < 2*DRAW_RADIUS) {
+                    return {
+                        hit: true,
+                        type: "hexagon"
+                    };
+                }
+
+                // Check for collision with a bubble
                 for (var i = 0; i < this.bubbles.length; i++) {
                     var bubble = this.bubbles[i],
                         bubblePosition = bubble.position(rotation),
                         d = pos.sub(bubblePosition).length();
 
-                    if (d < 2*RADIUS) {
-                        return bubble;
+                    if (d < 2*DRAW_RADIUS) {
+                        return {
+                            hit: true,
+                            type: "bubble",
+                            bubble: bubble
+                        };
                     }
                 }
 
-                return null;
+                // Otherwise, bail
+                return {
+                    hit: false
+                };
             };
 
             // Starting from a given bubble, traverse all adjacent bubbles that do not
@@ -207,46 +236,20 @@
             };
 
             // Handle a collision
-            obj.collide = function(targetBubble, projectile, rotation, angularVelocity) {
+            obj.collide = function(collision, projectile, rotation, angularVelocity) {
 
                 // We start off by constructing all possible new bubble positions
                 var candidateBubbles = [];
 
-                var currentRow = targetBubble.n,
-                    rowAbove = targetBubble.n+1,
-                    rowBelow = targetBubble.n-1,
-                    bubblesOnCurrentRow = 6*currentRow,
-                    bubblesOnRowAbove = 6*rowAbove,
-                    bubblesOnRowBelow = 6*rowBelow,
-                    currentGroup = targetBubble.k,
-                    currentIndex = targetBubble.j;
-
-                // These are the bubbles on the same row
-                candidateBubbles.push(Bubble(targetBubble.n, (targetBubble.i+1) % bubblesOnCurrentRow, projectile.color));
-                candidateBubbles.push(Bubble(targetBubble.n, (targetBubble.i+bubblesOnCurrentRow-1) % bubblesOnCurrentRow, projectile.color));
-
-                // Bubbles on edges has three above and one below
-                if (targetBubble.j == 0) {
-                    // Above
-                    candidateBubbles.push(Bubble(rowAbove, (rowAbove*currentGroup-1+bubblesOnRowAbove) % bubblesOnRowAbove, projectile.color));
-                    candidateBubbles.push(Bubble(rowAbove, rowAbove*currentGroup, projectile.color));
-                    candidateBubbles.push(Bubble(rowAbove, (rowAbove*currentGroup+1) % bubblesOnRowAbove, projectile.color));
-
-                    // Below
-                    if (rowBelow > 0) {
-                        candidateBubbles.push(Bubble(rowBelow, rowBelow*currentGroup, projectile.color));
-                    }
+                // The possible positions are the ones adjacent to a bubble, or...
+                if (collision.type == "bubble") {
+                    candidateBubbles = collision.bubble.getAdjacentPositions()
+                        .map(function(pos) { return Bubble(pos.n, pos.i, projectile.color); });
                 }
-                // All other positions have two below and two above
-                else {
-                    // Above
-                    candidateBubbles.push(Bubble(rowAbove, rowAbove*currentGroup+currentIndex, projectile.color));
-                    candidateBubbles.push(Bubble(rowAbove, (rowAbove*currentGroup+currentIndex+1) % bubblesOnRowAbove, projectile.color));
-
-                    // Below
-                    if (rowBelow > 0) {
-                        candidateBubbles.push(Bubble(rowBelow, (rowBelow*currentGroup+currentIndex-1+bubblesOnRowBelow) % bubblesOnRowBelow, projectile.color));
-                        candidateBubbles.push(Bubble(rowBelow, rowBelow*currentGroup+currentIndex, projectile.color));
+                // ...the ring around the center axis.
+                else if (collision.type == "hexagon" ){
+                    for (var i = 0; i < 6; i++) {
+                        candidateBubbles.push(Bubble(1, i, projectile.color));
                     }
                 }
 
@@ -352,6 +355,7 @@
             };
 
             obj.tick = function(rotation) {
+                // Animate collapsing bubbles
                 var newCollapsing = this.collapsing
                     .map(function(bubble) {
                         return bubble.collapseTick(); // Update position
@@ -360,6 +364,7 @@
                         return bubble.collapseFrame < COLLAPSE_TICKS; // Remove the ones that have finished animating
                     });
 
+                // Gake over occurs when a bubble still in play hits the edges of the game
                 var gameOver = this.bubbles.filter(function(bubble) {
                     var p = bubble.position(rotation);
                     if (p.x < RADIUS) {
@@ -381,6 +386,7 @@
                 });
             };
 
+            // Initialize fresh layers of bubbles
             obj.setupBubbles = function() {
                 for (var n = 1; n <= NUM_ROWS; n++) {
                     for (var i = 0; i < 6*n; i++) {
@@ -389,6 +395,7 @@
                 }
             };
 
+            // Return a state with a fresh set of bubbles, the same score, and a one step higher level
             obj.nextLevel = function() {
                 var newState = Extend(this, {
                     gameOver: false,
@@ -727,7 +734,7 @@
             var surface = GameSurface(document.querySelector("#bubblespinner-canvas")),
                 bubbleState = BubbleState(),
                 projectileState = ProjectileState(bubbleState),
-                rotation = 0,
+                rotation = -Math.PI/2,
                 angularVelocity = 0,
                 tick = 0,
                 tickInterval = 1;
@@ -805,13 +812,20 @@
                     projectileState = projectileState.tick(surface);
 
                     // Check for a collision
-                    var hitBubble = bubbleState.findBubble(projectileState.position, rotation);
-                    if (hitBubble) {
+                    var collision = bubbleState.checkForCollision(projectileState.position, rotation);
+                    if (collision.hit) {
 
-                        // Calculate collision position relative to center
-                        var pos = hitBubble.position(rotation).sub(Point(0.5, 0.5)),
-                            // Derive the momentum of the projectile by multiplying its velocity by mass
-                            projectileMomentum = projectileState.direction.mul(PROJECTILE_VELOCITY*PROJECTILE_MASS);
+                        var pos;
+
+                        if (collision.type == "bubble") {
+                            // Calculate collision position relative to center
+                            pos = collision.bubble.position(rotation).sub(Point(0.5, 0.5));
+                        } else {
+                            pos = projectileState.position.sub(Point(0.5, 0.5));
+                        }
+
+                        // Derive the momentum of the projectile by multiplying its velocity by mass
+                        var projectileMomentum = projectileState.direction.mul(PROJECTILE_VELOCITY*PROJECTILE_MASS);
 
                         // Some physics:
                         // The projectile has a certain angular momentum relative to center, which is
@@ -827,9 +841,12 @@
                         //
                         // w = (r x p)/I
                         angularVelocity += pos.crossZ(projectileMomentum)/bubbleState.momentOfInertia();
+                        if (Math.abs(angularVelocity) > Math.PI) {
+                            angularVelocity = angularVelocity/Math.abs(angularVelocity) * Math.PI; // retain sign
+                        }
 
                         // Update bubble state based on the collision, and reset our projectile state
-                        bubbleState = bubbleState.collide(hitBubble, projectileState, rotation, angularVelocity);
+                        bubbleState = bubbleState.collide(collision, projectileState, rotation, angularVelocity);
                         projectileState = ProjectileState(bubbleState);
                     }
                 }
