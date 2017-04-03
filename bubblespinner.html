@@ -19,12 +19,14 @@
         var DRAW_RADIUS = 0.9*RADIUS;
         var COLORS = ["#dd3333", "#33dd33", "#3333dd", "#dddd33", "#33dddd", "#dd33dd"];
         var COLLAPSE_TICKS = 30;
+        var EXPLOSION_TICKS = 60;
         var BUBBLE_MASS = 2;
         var SHOOTER_LENGTH = 1/20;
         var PROJECTILE_MASS = 50;
         var PROJECTILE_VELOCITY = 1/25;
         var GRAVITY = 1/1000;
-        var DEBUG = false;
+        var MAX_BOUNCES = 10;
+        var DEBUG = true;
 
         var Extend = function(copy, replace) {
             var newObject = {};
@@ -209,23 +211,43 @@
 
                 // We start off by constructing all possible new bubble positions
                 var candidateBubbles = [];
-                if (targetBubble.i == 0) {
-                    candidateBubbles.push(Bubble(targetBubble.n, 6*targetBubble.n-1, projectile.color));
-                } else {
-                    candidateBubbles.push(Bubble(targetBubble.n, targetBubble.i-1, projectile.color));
-                }
-                candidateBubbles.push(Bubble(targetBubble.n, (targetBubble.i+1) % (6*targetBubble.n), projectile.color));
+
+                var currentRow = targetBubble.n,
+                    rowAbove = targetBubble.n+1,
+                    rowBelow = targetBubble.n-1,
+                    bubblesOnCurrentRow = 6*currentRow,
+                    bubblesOnRowAbove = 6*rowAbove,
+                    bubblesOnRowBelow = 6*rowBelow,
+                    currentGroup = targetBubble.k,
+                    currentIndex = targetBubble.j;
+
+                // These are the bubbles on the same row
+                candidateBubbles.push(Bubble(targetBubble.n, (targetBubble.i+1) % bubblesOnCurrentRow, projectile.color));
+                candidateBubbles.push(Bubble(targetBubble.n, (targetBubble.i+bubblesOnCurrentRow-1) % bubblesOnCurrentRow, projectile.color));
+
+                // Bubbles on edges has three above and one below
                 if (targetBubble.j == 0) {
-                    if (targetBubble.i == 0) {
-                        candidateBubbles.push(Bubble(targetBubble.n+1, 6*(targetBubble.n+1)-1, projectile.color));
-                    } else {
-                        candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k-1, projectile.color));
+                    // Above
+                    candidateBubbles.push(Bubble(rowAbove, (rowAbove*currentGroup-1+bubblesOnRowAbove) % bubblesOnRowAbove, projectile.color));
+                    candidateBubbles.push(Bubble(rowAbove, rowAbove*currentGroup, projectile.color));
+                    candidateBubbles.push(Bubble(rowAbove, (rowAbove*currentGroup+1) % bubblesOnRowAbove, projectile.color));
+
+                    // Below
+                    if (rowBelow > 0) {
+                        candidateBubbles.push(Bubble(rowBelow, rowBelow*currentGroup, projectile.color));
                     }
-                    candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k, projectile.color));
-                    candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k+1, projectile.color));
-                } else {
-                    candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k, projectile.color));
-                    candidateBubbles.push(Bubble(targetBubble.n+1, targetBubble.i+targetBubble.k+1, projectile.color));
+                }
+                // All other positions have two below and two above
+                else {
+                    // Above
+                    candidateBubbles.push(Bubble(rowAbove, rowAbove*currentGroup+currentIndex, projectile.color));
+                    candidateBubbles.push(Bubble(rowAbove, (rowAbove*currentGroup+currentIndex+1) % bubblesOnRowAbove, projectile.color));
+
+                    // Below
+                    if (rowBelow > 0) {
+                        candidateBubbles.push(Bubble(rowBelow, (rowBelow*currentGroup+currentIndex-1+bubblesOnRowBelow) % bubblesOnRowBelow, projectile.color));
+                        candidateBubbles.push(Bubble(rowBelow, rowBelow*currentGroup+currentIndex, projectile.color));
+                    }
                 }
 
                 // The possible bubbles are filtered (inefficiently) so that only unoccupied positions remain
@@ -402,6 +424,8 @@
             obj.position = Point(0.5, RADIUS);
             obj.direction = Point(0, 1.0);
             obj.moving = false;
+            obj.bounces = 0;
+            obj.explosionTick = 0;
 
             // Create a new projectile state indicating that a shot is in progress
             obj.shoot = function(direction) {
@@ -415,6 +439,22 @@
                 return this.direction.mul(PROJECTILE_VELOCITY);
             };
 
+            obj.isExploding = function() {
+                return this.bounces > MAX_BOUNCES;
+            };
+
+            obj.hasFinishedExploding = function() {
+                return this.explosionTick > EXPLOSION_TICKS;
+            };
+
+            obj.getExplosionRadius = function() {
+                return 0.25*this.explosionTick/EXPLOSION_TICKS;
+            };
+
+            obj.getExplosionOffset = function() {
+                return this.explosionTick/EXPLOSION_TICKS*2*Math.PI;
+            };
+
             // Update the projectile position and return a new projectile state
             obj.tick = function(surface) {
 
@@ -423,19 +463,31 @@
 
                 // Check if we are going out of bounds, and reflect if necessary
                 var newDirection = this.direction;
+                var bounced = false;
                 if (newPosition.x > 1 - RADIUS) {
-                    newDirection = Point(-this.direction.x, this.direction.y);
+                    newDirection = Point(-newDirection.x, newDirection.y);
+                    bounced = true;
                 } else if (newPosition.x < RADIUS) {
-                    newDirection = Point(-this.direction.x, this.direction.y);
+                    newDirection = Point(-newDirection.x, newDirection.y);
+                    bounced = true;
                 }
 
                 if (newPosition.y > 1 - RADIUS) {
-                    newDirection = Point(this.newDirection.x, -this.newDirection.y);
+                    newDirection = Point(newDirection.x, -newDirection.y);
+                    bounced = true;
                 } else if (newPosition.y < RADIUS) {
-                    newDirection = Point(this.newDirection.x, -this.newDirection.y);
+                    newDirection = Point(newDirection.x, -newDirection.y);
+                    bounced = true;
+                }
+
+                var bounces = this.bounces;
+                if (bounced) {
+                    bounces++;
                 }
 
                 return Extend(this, {
+                    explosionTick: this.isExploding() ? this.explosionTick + 1 : 0,
+                    bounces: bounces,
                     position: newPosition,
                     direction: newDirection,
                     moving: true
@@ -477,10 +529,10 @@
                 this.mousePosition = this.shooterPosition.add(Point(0, 1));
             };
 
-            obj.drawHexagon = function(rotation) {
+            obj.drawHexagon = function(rotation, shake) {
                 ctx.beginPath();
                 for (var i = 0; i <= 6; i++) {
-                    var p = this.center.add(CircleEdge(RADIUS*this.scaleFactor, Math.PI*i/3 + rotation));
+                    var p = this.center.add(shake).add(CircleEdge(RADIUS*this.scaleFactor, Math.PI*i/3 + rotation));
                     ctx.lineTo(p.x, p.y); // When there are no points in the path, the specification dictates that lineTo works as moveTo
                 }
 
@@ -502,9 +554,9 @@
                 ctx.fill();
             };
 
-            obj.drawBubbles = function(bubbleState, rotation) {
+            obj.drawBubbles = function(bubbleState, rotation, shake) {
                 bubbleState.bubbles.forEach(function(bubble) {
-                    var p = bubble.position(rotation).mul(this.scaleFactor).add(this.translate);
+                    var p = bubble.position(rotation).mul(this.scaleFactor).add(this.translate).add(shake);
                     this.drawBubble(p, rotation, bubble.color, DRAW_RADIUS);
 
                     if (DEBUG) {
@@ -537,7 +589,28 @@
             };
 
             obj.drawProjectile = function(projectileState) {
-                this.drawBubble(projectileState.position.mul(this.scaleFactor).add(this.translate), 0, projectileState.color, DRAW_RADIUS);
+                var p = projectileState.position.mul(this.scaleFactor).add(this.translate);
+                if (projectileState.isExploding()) {
+                    var shards = 6;
+                    var offset = projectileState.getExplosionOffset();
+                    for (var i = 0; i < shards; i++) {
+                        var p2 = p.add(CircleEdge(projectileState.getExplosionRadius(),
+                                                  offset + i*2*Math.PI/shards).mul(this.scaleFactor));
+
+                        ctx.beginPath();
+                        ctx.moveTo(p2.x, p2.y);
+                        ctx.arc(p2.x,
+                                p2.y,
+                                projectileState.getExplosionRadius()*this.scaleFactor,
+                                offset+(i-0.5)*2*Math.PI/shards,
+                                offset+(i+0.5)*2*Math.PI/shards);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.fillStyle = projectileState.color;
+                        ctx.fill();
+                    }
+                } else {
+                    this.drawBubble(p, 0, projectileState.color, DRAW_RADIUS);
+                }
             };
 
             obj.drawGameOver = function(bubbleState) {
@@ -596,11 +669,16 @@
                 ctx.fillStyle = "#eee";
                 ctx.fillRect(this.margin, this.margin, this.size, this.size);
 
-                this.drawHexagon(rotation);
+                var shake = Point(0, 0);
+                if (projectileState.isExploding()) {
+                    shake = Point(0.02*(Math.random()-1/2)*this.scaleFactor, 0.02*(Math.random()-1/2)*this.scaleFactor);
+                }
+
+                this.drawHexagon(rotation, shake);
                 if (!bubbleState.levelComplete()) {
-                    this.drawProjectile(projectileState);
                     this.drawShooter(this.shooterPosition);
-                    this.drawBubbles(bubbleState, rotation);
+                    this.drawBubbles(bubbleState, rotation, shake);
+                    this.drawProjectile(projectileState);
                 }
                 this.drawCollapsingBubbles(bubbleState);
 
@@ -718,8 +796,11 @@
                     return;
                 }
 
-                if (projectileState.moving) {
-
+                if (projectileState.hasFinishedExploding()) {
+                    projectileState = ProjectileState(bubbleState);
+                } else if (projectileState.isExploding()) {
+                    projectileState = projectileState.tick(surface);
+                } else if (projectileState.moving) {
                     // Move the projectile forward
                     projectileState = projectileState.tick(surface);
 
